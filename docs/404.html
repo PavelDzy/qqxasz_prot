@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>Вход</title>
+<!-- Ссылка на app/* при первом заходе, когда Service Worker ещё не установлен: отправляем на вход. -->
+<script>
+  var i = location.pathname.indexOf('/app/');
+  location.replace(i >= 0 ? location.pathname.slice(0, i + 1) : '/');
+</script>
+</head>
+<body></body>
+</html>

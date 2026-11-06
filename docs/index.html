@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0b0a10">
+<title>Вход</title>
+<style>
+@font-face { font-family: Unbounded; src: url(fonts/unbounded-cyrillic-wght-normal.woff2) format('woff2'); font-weight: 200 900; font-display: swap; unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: Unbounded; src: url(fonts/unbounded-latin-wght-normal.woff2) format('woff2'); font-weight: 200 900; font-display: swap; unicode-range: U+0000-00FF, U+2000-206F; }
+@font-face { font-family: Manrope; src: url(fonts/manrope-cyrillic-wght-normal.woff2) format('woff2'); font-weight: 200 800; font-display: swap; unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: Manrope; src: url(fonts/manrope-latin-wght-normal.woff2) format('woff2'); font-weight: 200 800; font-display: swap; unicode-range: U+0000-00FF, U+2000-206F; }
+:root { --bg: #0b0a10; --surface: #17141f; --line: #2c2738; --text: #f3f0f7; --muted: #a29cb0; --orange: #ff8a1f; --violet: #8b3dff; --error: #ff7a7a; }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { display: grid; place-items: center; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); background: var(--bg); color: var(--text); font: 16px/1.5 Manrope, system-ui, sans-serif; }
+form { width: min(100%, 380px); }
+h1 { margin: 0 0 28px; font: 600 28px/1.1 Unbounded, system-ui, sans-serif; letter-spacing: -.03em; }
+label { display: block; margin-bottom: 16px; font-size: 14px; color: var(--muted); }
+input { display: block; width: 100%; height: 52px; margin-top: 6px; padding: 0 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); font: 16px Manrope, system-ui, sans-serif; }
+input:focus-visible, button:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+button { width: 100%; height: 52px; margin-top: 8px; border: 0; border-radius: 12px; background: linear-gradient(90deg, var(--orange), var(--violet)); color: #fff; font: 700 16px Manrope, system-ui, sans-serif; cursor: pointer; }
+button[disabled] { opacity: .6; cursor: progress; }
+#msg { min-height: 24px; margin: 14px 0 0; color: var(--error); font-size: 14px; }
+</style>
+</head>
+<body>
+<form id="f" autocomplete="on">
+  <h1>Вход</h1>
+  <label>Логин<input id="login" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+  <label>Пароль<input id="password" name="password" type="password" autocomplete="current-password" required></label>
+  <button id="go">Войти</button>
+  <p id="msg" role="alert"></p>
+</form>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const say = (text) => { $('msg').textContent = text; };
+const enc = new TextEncoder();
+const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+function withStore(mode, run) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open('proto-vault', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('keys');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction('keys', mode);
+      const req = run(tx.objectStore('keys'));
+      tx.oncomplete = () => { db.close(); resolve(req.result); };
+      tx.onerror = () => { db.close(); reject(tx.error); };
+    };
+  });
+}
+
+const supported = 'serviceWorker' in navigator && window.crypto && crypto.subtle && 'DecompressionStream' in window;
+
+async function login(user, password) {
+  const res = await fetch('vault.json', { cache: 'no-store' });
+  const vault = await res.json();
+  const material = await crypto.subtle.importKey('raw', enc.encode(`${user}\0${password}`), 'PBKDF2', false, ['deriveBits']);
+  const bits = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: b64(vault.salt), iterations: vault.iterations }, material, 512));
+  const aes = await crypto.subtle.importKey('raw', bits.subarray(0, 32), 'AES-GCM', false, ['decrypt']);
+  const mac = await crypto.subtle.importKey('raw', bits.subarray(32), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  bits.fill(0);
+  const check = b64(vault.check);
+  await crypto.subtle.decrypt({ name: 'AES-GCM', iv: check.subarray(0, 12), additionalData: enc.encode('check') }, aes, check.subarray(12));
+  await withStore('readwrite', (s) => s.put({ aes, mac }, 'session'));
+}
+
+const UNSUPPORTED = 'Этот браузер не поддерживается или открыт приватный режим. Откройте страницу в обычном окне свежего Chrome, Safari или Firefox.';
+$('go').disabled = true;
+try {
+  if (!supported) throw new Error('unsupported');
+  await navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' });
+  await navigator.serviceWorker.ready;
+  if (new URLSearchParams(location.search).has('expired')) {
+    await withStore('readwrite', (s) => s.clear());
+    say('Пароль изменился, войдите заново.');
+  } else if (await withStore('readonly', (s) => s.get('session'))) {
+    location.replace('app/');
+  }
+  $('go').disabled = false;
+} catch {
+  say(UNSUPPORTED);
+}
+
+$('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if ($('go').disabled) return;
+  $('go').disabled = true;
+  say('');
+  try {
+    await login($('login').value.trim(), $('password').value);
+    location.replace('app/');
+  } catch (err) {
+    say(err && err.name === 'OperationError' ? 'Неверный логин или пароль.' : 'Не удалось войти. Проверьте соединение и попробуйте ещё раз.');
+    $('go').disabled = false;
+  }
+});
+</script>
+</body>
+</html>
